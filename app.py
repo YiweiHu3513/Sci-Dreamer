@@ -15,7 +15,7 @@ app = Flask(__name__, static_folder='static')
 
 # Clients — API keys from environment variables
 openai_client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
-gemini_client = google_genai.Client(api_key=os.environ.get('GEMINI_API_KEY', 'AIzaSyBCY0EU2F4vbtIciJjchelX2ndEpozrPsU'))
+gemini_client = google_genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
 
 ASSETS_DIR   = os.path.join(os.path.dirname(__file__), 'assets')
 RECORDS_DIR  = os.path.join(os.path.dirname(__file__), 'records')
