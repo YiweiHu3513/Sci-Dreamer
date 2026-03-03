@@ -7,14 +7,12 @@ import re
 import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from PIL import Image, ImageDraw, ImageFont
-from openai import OpenAI
 from google import genai as google_genai
 from google.genai import types as google_types
 
 app = Flask(__name__, static_folder='static')
 
-# Clients — API keys from environment variables
-openai_client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
+# Clients — API keys from environment variables (Gemini only)
 gemini_client = google_genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
 
 ASSETS_DIR   = os.path.join(os.path.dirname(__file__), 'assets')
@@ -89,17 +87,18 @@ def generate_prompt(name_zh, name_en, invention_zh, invention_en, description, s
 
 Generate the Imagen 4 prompt for this invention."""
 
-    response = openai_client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message}
-        ],
-        temperature=0.7,
-        max_tokens=600
+    full_prompt = SYSTEM_PROMPT + "\n\n" + user_message
+
+    response = gemini_client.models.generate_content(
+        model='gemini-2.0-flash',
+        contents=full_prompt,
+        config=google_types.GenerateContentConfig(
+            temperature=0.7,
+            max_output_tokens=600,
+        )
     )
 
-    content = response.choices[0].message.content.strip()
+    content = response.text.strip()
     json_match = re.search(r'\{.*\}', content, re.DOTALL)
     if json_match:
         return json.loads(json_match.group())
