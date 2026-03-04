@@ -7,12 +7,19 @@ import re
 import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from PIL import Image, ImageDraw, ImageFont
+from openai import OpenAI
 from google import genai as google_genai
 from google.genai import types as google_types
 
 app = Flask(__name__, static_folder='static')
 
-# Clients — API keys from environment variables (Gemini only)
+# DeepSeek client for prompt generation (text only, cheap)
+deepseek_client = OpenAI(
+    api_key=os.environ.get('DEEPSEEK_API_KEY'),
+    base_url='https://api.deepseek.com',
+)
+
+# Gemini client for image generation only
 gemini_client = google_genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
 
 ASSETS_DIR   = os.path.join(os.path.dirname(__file__), 'assets')
@@ -51,30 +58,9 @@ TEXT_LAYERS = {
 
 # ── Prompt generation ──────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are Sci-Dreamer's Prompt Builder for children's speculative invention cards about nuclear fusion.
-
-Convert a child's invention description into a high-quality image generation prompt for Imagen 4.
-
-Follow this Chain-of-Thought:
-1. Function Recognition: identify the core invention concept
-2. Material Inference: translate childlike metaphors into physical materials
-   (e.g. "glows like firefly" → "bioluminescent neon tubing, Cherenkov radiation glow")
-3. Parameter Generation: add photorealistic rendering parameters
-
-Output ONLY a JSON object:
-{
-  "prompt": "detailed English prompt, starting with main subject, including materials, lighting, style. MUST end with: 16:9 aspect ratio, 1920x1080 resolution, no text, no watermark, no people, cinematic composition",
-  "style_tags": ["sci-fi", "industrial", "speculative design"]
-}
-
-Rules:
-- Prompt must be in English
-- Include: volumetric lighting, photorealistic, 8K, hyperrealistic, sci-fi industrial aesthetic
-- Preserve child's core concept but elevate to speculative design blueprint
-- Background relates to usage scenario
-- Always include: detailed mechanical design, speculative industrial aesthetic
-- Keep prompt under 220 words
-- NEVER include text, letters, words, watermarks in the prompt"""
+SYSTEM_PROMPT = """Convert a child's invention into an Imagen 4 image prompt. Output ONLY valid JSON:
+{"prompt": "English image prompt under 150 words. Start with main subject. Include: photorealistic, 8K, volumetric lighting, sci-fi industrial aesthetic, speculative design. End with: 16:9, no text, no people, cinematic", "style_tags": ["sci-fi"]}
+Rules: English only. Translate childlike metaphors to physical materials. No text/watermarks in prompt."""
 
 
 def generate_prompt(name_zh, name_en, invention_zh, invention_en, description, scenario, language):
@@ -87,18 +73,17 @@ def generate_prompt(name_zh, name_en, invention_zh, invention_en, description, s
 
 Generate the Imagen 4 prompt for this invention."""
 
-    full_prompt = SYSTEM_PROMPT + "\n\n" + user_message
-
-    response = gemini_client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=full_prompt,
-        config=google_types.GenerateContentConfig(
-            temperature=0.7,
-            max_output_tokens=600,
-        )
+    response = deepseek_client.chat.completions.create(
+        model='deepseek-chat',
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': user_message},
+        ],
+        temperature=0.7,
+        max_tokens=400,
     )
 
-    content = response.text.strip()
+    content = response.choices[0].message.content.strip()
     json_match = re.search(r'\{.*\}', content, re.DOTALL)
     if json_match:
         return json.loads(json_match.group())
