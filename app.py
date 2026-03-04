@@ -8,7 +8,10 @@ import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from PIL import Image, ImageDraw, ImageFont
 import requests
+import time
 from openai import OpenAI
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
 app = Flask(__name__, static_folder='static')
 
@@ -18,8 +21,23 @@ deepseek_client = OpenAI(
     base_url='https://api.deepseek.com',
 )
 
-# Together AI client for image generation (Flux)
-TOGETHER_API_KEY = os.environ.get('TOGETHER_API_KEY', '')
+# Vertex AI Imagen 4 — Service Account auth
+_SA_JSON = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', '')
+_VERTEX_PROJECT = 'sci-dreamer-imagen'
+_VERTEX_LOCATION = 'us-central1'
+_VERTEX_MODEL = 'imagen-4.0-fast-generate-001'
+
+def _get_vertex_token():
+    """Get a short-lived OAuth2 access token from the service account JSON."""
+    if not _SA_JSON:
+        raise RuntimeError('GOOGLE_SERVICE_ACCOUNT_JSON env var is not set')
+    sa_info = json.loads(_SA_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        sa_info,
+        scopes=['https://www.googleapis.com/auth/cloud-platform'],
+    )
+    creds.refresh(GoogleAuthRequest())
+    return creds.token
 
 ASSETS_DIR   = os.path.join(os.path.dirname(__file__), 'assets')
 RECORDS_DIR  = os.path.join(os.path.dirname(__file__), 'records')
@@ -91,27 +109,34 @@ Generate the Imagen 4 prompt for this invention."""
 
 # ── Imagen 4 generation ────────────────────────────────────────────────────────
 
-def generate_image_with_flux(prompt_text):
-    """Call Flux via Together AI API, return raw image bytes (16:9)"""
+def generate_image_with_vertex(prompt_text):
+    """Call Imagen 4 via Vertex AI REST API, return raw image bytes (16:9)"""
+    token = _get_vertex_token()
+    url = (
+        f'https://{_VERTEX_LOCATION}-aiplatform.googleapis.com/v1'
+        f'/projects/{_VERTEX_PROJECT}/locations/{_VERTEX_LOCATION}'
+        f'/publishers/google/models/{_VERTEX_MODEL}:predict'
+    )
+    payload = {
+        'instances': [{'prompt': prompt_text}],
+        'parameters': {
+            'sampleCount': 1,
+            'aspectRatio': '16:9',
+            'addWatermark': False,
+            'enhancePrompt': False,
+        },
+    }
     resp = requests.post(
-        'https://api.together.xyz/v1/images/generations',
+        url,
         headers={
-            'Authorization': f'Bearer {TOGETHER_API_KEY}',
+            'Authorization': f'Bearer {token}',
             'Content-Type': 'application/json',
         },
-        json={
-            'model': 'black-forest-labs/FLUX.1-schnell-Free',
-            'prompt': prompt_text,
-            'width': 1344,
-            'height': 768,
-            'steps': 4,
-            'n': 1,
-            'response_format': 'b64_json',
-        },
-        timeout=60,
+        json=payload,
+        timeout=90,
     )
     resp.raise_for_status()
-    b64 = resp.json()['data'][0]['b64_json']
+    b64 = resp.json()['predictions'][0]['bytesBase64Encoded']
     return base64.b64decode(b64)
 
 
@@ -372,7 +397,7 @@ def api_one_shot():
         prompt_text = prompt_result.get('prompt', '')
 
         # Step 2: Generate image with Imagen 4
-        img_bytes = generate_image_with_flux(prompt_text)
+        img_bytes = generate_image_with_vertex(prompt_text)
 
         # Step 3: Compose poster
         poster_bytes = compose_poster(
