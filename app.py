@@ -426,25 +426,36 @@ def api_one_shot():
             img_bytes, name_zh, name_en, invention_zh, invention_en, language
         )
 
-        # Save record + poster to disk
+        # Save record + poster + sketch to disk
         try:
             ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
             poster_filename = f'poster_{ts}.png'
             poster_path = os.path.join(POSTERS_DIR, poster_filename)
             with open(poster_path, 'wb') as pf:
                 pf.write(poster_bytes)
+
+            # Save sketch if provided
+            sketch_filename = ''
+            sketch_file = request.files.get('sketch')
+            if sketch_file and sketch_file.filename:
+                ext = os.path.splitext(sketch_file.filename)[1] or '.png'
+                sketch_filename = f'sketch_{ts}{ext}'
+                sketch_path = os.path.join(POSTERS_DIR, sketch_filename)
+                sketch_file.save(sketch_path)
+
             rec = {
-                'time':         datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'name_zh':      name_zh,
-                'name_en':      name_en,
-                'invention_zh': invention_zh,
-                'invention_en': invention_en,
-                'description':  description,
-                'scenario':     scenario,
-                'language':     language,
-                'prompt':       prompt_text,
-                'style_tags':   prompt_result.get('style_tags', []),
-                'poster_file':  poster_filename,
+                'time':          datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'name_zh':       name_zh,
+                'name_en':       name_en,
+                'invention_zh':  invention_zh,
+                'invention_en':  invention_en,
+                'description':   description,
+                'scenario':      scenario,
+                'language':      language,
+                'prompt':        prompt_text,
+                'style_tags':    prompt_result.get('style_tags', []),
+                'poster_file':   poster_filename,
+                'sketch_file':   sketch_filename,
             }
             rec_path = os.path.join(RECORDS_DIR, f'record_{ts}.json')
             with open(rec_path, 'w', encoding='utf-8') as rf:
@@ -557,12 +568,21 @@ def admin_records():
         else:
             poster_html = '<span style="color:#444">无图</span>'
 
+        sketch_file = r.get('sketch_file', '')
+        if sketch_file:
+            sketch_html = f'''<a href="/admin/poster/{sketch_file}" target="_blank">
+              <img src="/admin/poster/{sketch_file}" style="width:120px;height:120px;object-fit:contain;border-radius:6px;border:1px solid #1a2a4a;background:#060a14;display:block">
+            </a>'''
+        else:
+            sketch_html = '<span style="color:#444">未上传</span>'
+
         rows += f'''<tr>
           <td style="white-space:nowrap">{r.get("time","")}</td>
           <td><b style="color:#fff">{r.get("name_zh","")}</b><br><span style="color:#778">{r.get("name_en","")}</span></td>
           <td><b style="color:#fff">{r.get("invention_zh","")}</b><br><span style="color:#778">{r.get("invention_en","")}</span></td>
           <td style="color:#556;font-size:12px">{r.get("description","")[:80]}</td>
           <td style="color:#556;font-size:12px">{r.get("scenario","")[:60]}</td>
+          <td>{sketch_html}</td>
           <td>{poster_html}</td>
         </tr>'''
 
@@ -590,6 +610,7 @@ def admin_records():
     <th>发明名称</th>
     <th>原理描述</th>
     <th>使用场景</th>
+    <th>草图</th>
     <th>海报</th>
   </tr></thead>
   <tbody>{rows}</tbody>
