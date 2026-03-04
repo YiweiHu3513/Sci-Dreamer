@@ -28,10 +28,16 @@ _VERTEX_LOCATION = 'us-central1'
 _VERTEX_MODEL = 'imagen-4.0-fast-generate-001'
 
 def _get_vertex_token():
-    """Get a short-lived OAuth2 access token from the service account JSON."""
+    """Get a short-lived OAuth2 access token from the service account JSON (base64 encoded)."""
     if not _SA_JSON:
         raise RuntimeError('GOOGLE_SERVICE_ACCOUNT_JSON env var is not set')
-    sa_info = json.loads(_SA_JSON)
+    # Support both raw JSON and base64-encoded JSON
+    raw = _SA_JSON.strip()
+    try:
+        sa_info = json.loads(raw)
+    except json.JSONDecodeError:
+        # Try base64 decode
+        sa_info = json.loads(base64.b64decode(raw).decode('utf-8'))
     creds = service_account.Credentials.from_service_account_info(
         sa_info,
         scopes=['https://www.googleapis.com/auth/cloud-platform'],
