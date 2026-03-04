@@ -5,7 +5,9 @@ import base64
 import json
 import re
 import datetime
-from flask import Flask, request, jsonify, send_from_directory
+import hashlib
+from functools import wraps
+from flask import Flask, request, jsonify, send_from_directory, session, redirect, url_for, Response
 from PIL import Image, ImageDraw, ImageFont
 import requests
 import time
@@ -14,6 +16,18 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import Request as GoogleAuthRequest
 
 app = Flask(__name__, static_folder='static')
+app.secret_key = os.environ.get('ADMIN_SECRET_KEY', 'sci-dreamer-secret-2025')
+
+# Admin password (set via env var ADMIN_PASSWORD, default: scidreamer2025)
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'scidreamer2025')
+
+def require_admin(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('admin_logged_in'):
+            return redirect('/admin/login')
+        return f(*args, **kwargs)
+    return decorated
 
 # DeepSeek client for prompt generation (text only, cheap)
 deepseek_client = OpenAI(
@@ -47,7 +61,9 @@ def _get_vertex_token():
 
 ASSETS_DIR   = os.path.join(os.path.dirname(__file__), 'assets')
 RECORDS_DIR  = os.path.join(os.path.dirname(__file__), 'records')
+POSTERS_DIR  = os.path.join(os.path.dirname(__file__), 'records', 'posters')
 os.makedirs(RECORDS_DIR, exist_ok=True)
+os.makedirs(POSTERS_DIR, exist_ok=True)
 
 # Font paths — use system NotoSansCJK for reliable CJK rendering
 FONT_CJK_BLACK = os.path.join(ASSETS_DIR, 'NotoSansCJK-Black.ttc')
@@ -410,6 +426,32 @@ def api_one_shot():
             img_bytes, name_zh, name_en, invention_zh, invention_en, language
         )
 
+        # Save record + poster to disk
+        try:
+            ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
+            poster_filename = f'poster_{ts}.png'
+            poster_path = os.path.join(POSTERS_DIR, poster_filename)
+            with open(poster_path, 'wb') as pf:
+                pf.write(poster_bytes)
+            rec = {
+                'time':         datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'name_zh':      name_zh,
+                'name_en':      name_en,
+                'invention_zh': invention_zh,
+                'invention_en': invention_en,
+                'description':  description,
+                'scenario':     scenario,
+                'language':     language,
+                'prompt':       prompt_text,
+                'style_tags':   prompt_result.get('style_tags', []),
+                'poster_file':  poster_filename,
+            }
+            rec_path = os.path.join(RECORDS_DIR, f'record_{ts}.json')
+            with open(rec_path, 'w', encoding='utf-8') as rf:
+                json.dump(rec, rf, ensure_ascii=False, indent=2)
+        except Exception as save_err:
+            print(f'Record save error: {save_err}')
+
         return jsonify({
             'success': True,
             'prompt': prompt_text,
@@ -445,12 +487,57 @@ def api_save_record():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    error = ''
+    if request.method == 'POST':
+        pwd = request.form.get('password', '')
+        if pwd == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            return redirect('/admin/records')
+        else:
+            error = '密码错误，请重试'
+    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>Sci-Dreamer 后台登录</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:#080c1a;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:"PingFang SC",sans-serif}}
+  .card{{background:#0d1528;border:1px solid #1a2a4a;border-radius:16px;padding:48px 40px;width:360px;text-align:center}}
+  h1{{color:#00d4ff;font-size:22px;margin-bottom:8px;letter-spacing:1px}}
+  p{{color:#556;font-size:13px;margin-bottom:32px}}
+  input{{width:100%;padding:12px 16px;background:#060a14;border:1px solid #1e3050;border-radius:8px;color:#cde;font-size:15px;outline:none;margin-bottom:16px}}
+  input:focus{{border-color:#00d4ff}}
+  button{{width:100%;padding:12px;background:linear-gradient(135deg,#00d4ff,#9b59ff);border:none;border-radius:8px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;letter-spacing:1px}}
+  .err{{color:#ff6b6b;font-size:13px;margin-top:12px}}
+</style></head><body>
+<div class="card">
+  <h1>Sci-Dreamer</h1>
+  <p>后台管理 · 请输入密码</p>
+  <form method="POST">
+    <input type="password" name="password" placeholder="请输入管理密码" autofocus>
+    <button type="submit">进入后台</button>
+  </form>
+  <div class="err">{error}</div>
+</div>
+</body></html>'''
+
+
+@app.route('/admin/logout')
+def admin_logout():
+    session.pop('admin_logged_in', None)
+    return redirect('/admin/login')
+
+
+@app.route('/admin/poster/<filename>')
+@require_admin
+def serve_poster(filename):
+    return send_from_directory(POSTERS_DIR, filename)
+
+
 @app.route('/admin/records')
+@require_admin
 def admin_records():
-    """Simple admin page to view all collected records."""
-    files = sorted([
-        f for f in os.listdir(RECORDS_DIR) if f.endswith('.json')
-    ], reverse=True)
+    files = sorted([f for f in os.listdir(RECORDS_DIR) if f.endswith('.json')], reverse=True)
     records = []
     for fn in files:
         try:
@@ -458,33 +545,56 @@ def admin_records():
                 records.append(json.load(f))
         except Exception:
             pass
-    rows = ''.join([
-        f"""<tr>
-          <td>{r.get('time','')}</td>
-          <td>{r.get('name_zh','')} / {r.get('name_en','')}</td>
-          <td>{r.get('invention_zh','')} / {r.get('invention_en','')}</td>
-          <td style='max-width:320px;font-size:11px;color:#888;word-break:break-all'>{r.get('prompt','')[:200]}…</td>
-          <td>{', '.join(r.get('style_tags',[]))}</td>
-        </tr>"""
-        for r in records
-    ])
-    html = f"""<!DOCTYPE html><html><head><meta charset='UTF-8'>
-    <title>Sci-Dreamer Records</title>
-    <style>
-      body{{background:#0a0e1a;color:#cdd;font-family:monospace;padding:24px}}
-      h1{{color:#00d4ff;margin-bottom:16px}}
-      table{{border-collapse:collapse;width:100%}}
-      th{{background:#111a2e;color:#00d4ff;padding:8px 12px;text-align:left;font-size:12px}}
-      td{{padding:8px 12px;border-bottom:1px solid #1a2540;font-size:13px;vertical-align:top}}
-      tr:hover td{{background:#0d1528}}
-      .count{{color:#9b59ff;font-size:14px;margin-bottom:12px}}
-    </style></head><body>
-    <h1>Sci-Dreamer · 收集记录</h1>
-    <div class='count'>共 {len(records)} 条记录</div>
-    <table><thead><tr>
-      <th>时间</th><th>姓名</th><th>发明</th><th>Prompt（前200字）</th><th>风格标签</th>
-    </tr></thead><tbody>{rows}</tbody></table>
-    </body></html>"""
+
+    rows = ''
+    for r in records:
+        poster_file = r.get('poster_file', '')
+        if poster_file:
+            poster_html = f'''<a href="/admin/poster/{poster_file}" target="_blank">
+              <img src="/admin/poster/{poster_file}" style="width:200px;height:113px;object-fit:cover;border-radius:6px;border:1px solid #1a2a4a;display:block">
+            </a>
+            <a href="/admin/poster/{poster_file}" download style="color:#00d4ff;font-size:11px;margin-top:4px;display:block">下载 PNG</a>'''
+        else:
+            poster_html = '<span style="color:#444">无图</span>'
+
+        rows += f'''<tr>
+          <td style="white-space:nowrap">{r.get("time","")}</td>
+          <td><b style="color:#fff">{r.get("name_zh","")}</b><br><span style="color:#778">{r.get("name_en","")}</span></td>
+          <td><b style="color:#fff">{r.get("invention_zh","")}</b><br><span style="color:#778">{r.get("invention_en","")}</span></td>
+          <td style="color:#556;font-size:12px">{r.get("description","")[:80]}</td>
+          <td style="color:#556;font-size:12px">{r.get("scenario","")[:60]}</td>
+          <td>{poster_html}</td>
+        </tr>'''
+
+    html = f'''<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>Sci-Dreamer 后台</title>
+<style>
+  *{{box-sizing:border-box}}
+  body{{background:#080c1a;color:#cde;font-family:"PingFang SC",monospace;padding:32px;margin:0}}
+  h1{{color:#00d4ff;font-size:24px;margin-bottom:4px}}
+  .meta{{color:#445;font-size:13px;margin-bottom:24px}}
+  .logout{{float:right;color:#ff6b6b;font-size:13px;text-decoration:none;padding:6px 14px;border:1px solid #ff6b6b;border-radius:6px}}
+  table{{border-collapse:collapse;width:100%;margin-top:8px}}
+  th{{background:#0d1528;color:#00d4ff;padding:10px 14px;text-align:left;font-size:12px;border-bottom:1px solid #1a2a4a;white-space:nowrap}}
+  td{{padding:12px 14px;border-bottom:1px solid #0d1528;vertical-align:top;font-size:13px}}
+  tr:hover td{{background:#0a1020}}
+  .badge{{display:inline-block;background:#1a2a4a;color:#9b59ff;font-size:11px;padding:2px 8px;border-radius:4px;margin-bottom:4px}}
+</style></head><body>
+<a href="/admin/logout" class="logout">退出登录</a>
+<h1>Sci-Dreamer · 发明卡收集后台</h1>
+<div class="meta">共 <b style="color:#9b59ff">{len(records)}</b> 条记录 &nbsp;·&nbsp; 最新在前</div>
+<table>
+  <thead><tr>
+    <th>生成时间</th>
+    <th>发明者</th>
+    <th>发明名称</th>
+    <th>原理描述</th>
+    <th>使用场景</th>
+    <th>海报</th>
+  </tr></thead>
+  <tbody>{rows}</tbody>
+</table>
+</body></html>'''
     return html
 
 
