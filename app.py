@@ -7,9 +7,8 @@ import re
 import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from PIL import Image, ImageDraw, ImageFont
+import requests
 from openai import OpenAI
-from google import genai as google_genai
-from google.genai import types as google_types
 
 app = Flask(__name__, static_folder='static')
 
@@ -19,8 +18,8 @@ deepseek_client = OpenAI(
     base_url='https://api.deepseek.com',
 )
 
-# Gemini client for image generation only
-gemini_client = google_genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
+# Together AI client for image generation (Flux)
+TOGETHER_API_KEY = os.environ.get('TOGETHER_API_KEY', '')
 
 ASSETS_DIR   = os.path.join(os.path.dirname(__file__), 'assets')
 RECORDS_DIR  = os.path.join(os.path.dirname(__file__), 'records')
@@ -92,17 +91,28 @@ Generate the Imagen 4 prompt for this invention."""
 
 # ── Imagen 4 generation ────────────────────────────────────────────────────────
 
-def generate_image_with_gemini(prompt_text):
-    """Call Imagen 4 Fast via Gemini API, return raw image bytes (16:9)"""
-    response = gemini_client.models.generate_images(
-        model='imagen-4.0-fast-generate-001',
-        prompt=prompt_text,
-        config=google_types.GenerateImagesConfig(
-            number_of_images=1,
-            aspect_ratio='16:9',
-        )
+def generate_image_with_flux(prompt_text):
+    """Call Flux via Together AI API, return raw image bytes (16:9)"""
+    resp = requests.post(
+        'https://api.together.xyz/v1/images/generations',
+        headers={
+            'Authorization': f'Bearer {TOGETHER_API_KEY}',
+            'Content-Type': 'application/json',
+        },
+        json={
+            'model': 'black-forest-labs/FLUX.1-schnell-Free',
+            'prompt': prompt_text,
+            'width': 1344,
+            'height': 768,
+            'steps': 4,
+            'n': 1,
+            'response_format': 'b64_json',
+        },
+        timeout=60,
     )
-    return response.generated_images[0].image.image_bytes
+    resp.raise_for_status()
+    b64 = resp.json()['data'][0]['b64_json']
+    return base64.b64decode(b64)
 
 
 # ── Poster composition ─────────────────────────────────────────────────────────
@@ -362,7 +372,7 @@ def api_one_shot():
         prompt_text = prompt_result.get('prompt', '')
 
         # Step 2: Generate image with Imagen 4
-        img_bytes = generate_image_with_gemini(prompt_text)
+        img_bytes = generate_image_with_flux(prompt_text)
 
         # Step 3: Compose poster
         poster_bytes = compose_poster(
